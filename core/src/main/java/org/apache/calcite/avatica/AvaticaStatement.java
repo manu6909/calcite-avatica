@@ -30,6 +30,10 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+/*Prevalent AI update. For implementing pattern matching with LIKE condition*/
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+/*****************************************************************************/
 /**
  * Implementation of {@link java.sql.Statement}
  * for the Avatica engine.
@@ -205,8 +209,16 @@ public abstract class AvaticaStatement
   // implement Statement
 
   public boolean execute(String sql) throws SQLException {
+    /**
+     * Prealent AI update dated 11/22/2019
+     * Updates for using Avatica jdbc jar with Tableau
+     * Replacing  'POSITION' clause with LIKE clause for pattern matching
+     */
+
+    String sql_upt = sql.replaceAll("POSITION\\(\\'(.+?)\\' IN (.+?)\\) > 0",
+            "$2 LIKE LOWER('%$1%')");
     checkNotPreparedOrCallable("execute(String)");
-    executeInternal(sql);
+    executeInternal(sql_upt);
     // Result set is null for DML or DDL.
     // Result set is closed if user cancelled the query.
     return openResultSet != null && !openResultSet.isClosed();

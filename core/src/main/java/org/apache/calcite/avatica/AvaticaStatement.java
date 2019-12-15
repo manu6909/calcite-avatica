@@ -212,9 +212,23 @@ public abstract class AvaticaStatement
   // implement Statement
 
   public boolean execute(String sql) throws SQLException {
+
     checkOpen();
-    checkNotPreparedOrCallable("execute(String)");
-    executeInternal(sql);
+    /**
+     * Prealent AI update dated 11/22/2019
+     * Updates for using Avatica jdbc jar with Tableau
+     * Replacing  'POSITION' clause with LIKE clause for pattern matching
+     */
+
+    if(sql.toLowerCase().matches("^CREATE.*TABLE.*$")){
+      openResultSet=null;
+    }
+    else{
+      String sql_upt = sql.replaceAll("POSITION\\(\\'(.+?)\\' IN (.+?)\\) > 0",
+              "$2 LIKE LOWER('%$1%')");
+      checkNotPreparedOrCallable("execute(String)");
+      executeInternal(sql_upt);
+    }
     // Result set is null for DML or DDL.
     // Result set is closed if user cancelled the query.
     return openResultSet != null && !openResultSet.isClosed();

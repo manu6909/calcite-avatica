@@ -220,18 +220,24 @@ public abstract class AvaticaStatement
      * Replacing  'POSITION' clause with LIKE clause for pattern matching
      */
 
-    if(sql.toLowerCase().matches("^CREATE.*TABLE.*$")){
+    if(sql.toLowerCase().matches("^create.*$") || sql.toLowerCase().matches("^drop.*$"))
+    {
       openResultSet=null;
+      throw AvaticaConnection.HELPER.createException("Log for create++++++++ \"" + sql + "\": ");
+      // Result set is null for DML or DDL.
+      // Result set is closed if user cancelled the query.
+      //return false;
     }
-    else{
+    else
+      {
       String sql_upt = sql.replaceAll("POSITION\\(\\'(.+?)\\' IN (.+?)\\) > 0",
               "$2 LIKE LOWER('%$1%')");
       checkNotPreparedOrCallable("execute(String)");
       executeInternal(sql_upt);
-    }
-    // Result set is null for DML or DDL.
-    // Result set is closed if user cancelled the query.
-    return openResultSet != null && !openResultSet.isClosed();
+      // Result set is null for DML or DDL.
+      // Result set is closed if user cancelled the query.
+      return openResultSet != null && !openResultSet.isClosed();
+      }
   }
 
   public ResultSet executeQuery(String sql) throws SQLException {

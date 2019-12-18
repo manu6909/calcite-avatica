@@ -217,16 +217,17 @@ public abstract class AvaticaStatement
     /**
      * Prealent AI update dated 11/22/2019
      * Updates for using Avatica jdbc jar with Tableau
-     * Replacing  'POSITION' clause with LIKE clause for pattern matching
+     * 1. Replacing  'POSITION' clause with LIKE clause for pattern matching
+     * 2. Drop DDL statements ("CREATE", "DROP") which will avoid failures while pushing to
+     *    Calcite query planner
      */
-
-    if(sql.toLowerCase().matches("^create.*$") || sql.toLowerCase().matches("^drop.*$"))
+    if(true == sql.contains("CREATE LOCAL TEMPORARY TABLE"))
     {
       openResultSet=null;
-      throw AvaticaConnection.HELPER.createException("Log for create++++++++ \"" + sql + "\": ");
-      // Result set is null for DML or DDL.
-      // Result set is closed if user cancelled the query.
-      //return false;
+    }
+    else if(true == sql.contains("DROP TABLE"))
+    {
+      openResultSet=null;
     }
     else
       {
@@ -234,10 +235,10 @@ public abstract class AvaticaStatement
               "$2 LIKE LOWER('%$1%')");
       checkNotPreparedOrCallable("execute(String)");
       executeInternal(sql_upt);
-      // Result set is null for DML or DDL.
-      // Result set is closed if user cancelled the query.
-      return openResultSet != null && !openResultSet.isClosed();
       }
+    // Result set is null for DML or DDL.
+    // Result set is closed if user cancelled the query.
+    return openResultSet != null && !openResultSet.isClosed();
   }
 
   public ResultSet executeQuery(String sql) throws SQLException {

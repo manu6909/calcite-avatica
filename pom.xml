@@ -108,6 +108,9 @@ limitations under the License.
     <slf4j.version>1.7.25</slf4j.version>
     <spotbugs.version>3.1.11</spotbugs.version>
     <spotbugs-maven-plugin.version>3.1.10</spotbugs-maven-plugin.version>
+    <!-- PAI changes for intercepting JOIN queries from tableau for updation -->
+    <jsql.parser.version>3.1</jsql.parser.version>
+    <!-- PAI changes end -->
   </properties>
   <issueManagement>
     <system>Jira</system>
@@ -319,6 +322,13 @@ limitations under the License.
         <artifactId>slf4j-log4j12</artifactId>
         <version>${slf4j.version}</version>
       </dependency>
+      <!-- PAI changes to intercept JOIN queries from Tableau and to update -->
+      <dependency>
+        <groupId>com.github.jsqlparser</groupId>
+        <artifactId>jsqlparser</artifactId>
+        <version>${jsql.parser.version}</version>
+      </dependency>
+      <!-- PAI changes end -->
     </dependencies>
   </dependencyManagement>
   <build>

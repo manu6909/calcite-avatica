@@ -87,6 +87,13 @@ limitations under the License.
       <artifactId>slf4j-log4j12</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- PAI changes to intercept JOIN queries from Tableau and to update -->
+    <dependency>
+      <groupId>com.github.jsqlparser</groupId>
+      <artifactId>jsqlparser</artifactId>
+      <version>${jsql.parser.version}</version>
+    </dependency>
+    <!-- PAI changes end -->
   </dependencies>
 
   <build>

@@ -16,6 +16,13 @@
  */
 package org.apache.calcite.avatica;
 
+import net.sf.jsqlparser.JSQLParserException;
+import net.sf.jsqlparser.expression.Expression;
+import net.sf.jsqlparser.parser.CCJSqlParserUtil;
+import net.sf.jsqlparser.statement.select.OrderByElement;
+import net.sf.jsqlparser.statement.select.PlainSelect;
+import net.sf.jsqlparser.statement.select.Select;
+import org.apache.calcite.avatica.pai.DruidQueryOptimizer;
 import org.apache.calcite.avatica.remote.TypedValue;
 
 import java.sql.CallableStatement;
@@ -213,28 +220,70 @@ public abstract class AvaticaStatement
 
   public boolean execute(String sql) throws SQLException {
 
-    checkOpen();
-    /**
-     * Prealent AI update dated 11/22/2019
-     * Updates for using Avatica jdbc jar with Tableau
-     * 1. Replacing  'POSITION' clause with LIKE clause for pattern matching
-     * 2. Drop DDL statements ("CREATE", "DROP") which will avoid failures while pushing to
-     *    Calcite query planner
-     */
-    if(true == sql.contains("CREATE LOCAL TEMPORARY TABLE"))
-    {
-      openResultSet=null;
-    }
-    else if(true == sql.contains("DROP TABLE"))
-    {
-      openResultSet=null;
-    }
-    else
-      {
-      String sql_upt = sql.replaceAll("POSITION\\(\\'(.+?)\\' IN (.+?)\\) > 0",
-              "$2 LIKE LOWER('%$1%')");
-      checkNotPreparedOrCallable("execute(String)");
-      executeInternal(sql_upt);
+      checkOpen();
+      /**
+       * Prealent AI update dated 12/23/2019
+       * Updates for using Avatica jdbc jar with Tableau
+       * 1. Replacing  'POSITION' clause with LIKE clause for pattern matching
+       * 2. Drop DDL statements ("CREATE", "DROP") which will avoid failures while pushing to
+       *    Calcite query planner
+       * 3. Intercept INNER JOIN queries fired by Tableau for Ton N results and push
+       *    corrected queries to calcite query planner for better performance
+       */
+      String sql_no_join = "";
+      String sql_upt = "";
+      if(sql.contains("CREATE LOCAL TEMPORARY TABLE")) {
+        openResultSet=null;
+      }
+      else if(sql.contains("DROP TABLE")) {
+        openResultSet=null;
+      }
+      else {
+        if(sql.contains("INNER JOIN")) { // Find queries with INNER JOIN clause for updation
+          String order_by = "";
+          String sql_inner = DruidQueryOptimizer.changeQuery(sql);
+          try {
+            Select statement = (Select) CCJSqlParserUtil.parse(sql_inner);
+            PlainSelect plainSelect = (PlainSelect) statement.getSelectBody();
+            List<OrderByElement> orderByElementList = plainSelect.getOrderByElements();
+            if(!orderByElementList.isEmpty()){
+              String col = orderByElementList.get(0).getExpression().toString(); //Only pick first column from ORDER BY CLAUSE
+              if(orderByElementList.get(0).isAsc()) {
+                order_by = col + " ASC";
+              }
+              else {
+                order_by = col + " DESC";
+              }
+            }
+            if(sql_inner.contains("WHERE")){ //Query with WHERE condition available in INNER query
+              sql_no_join = sql_inner.replaceAll("ORDER BY.*LIMIT",
+                      "ORDER BY "+order_by+" LIMIT");
+            }
+            else if (sql.contains("WHERE")){ //Query with WHERE condition not available in INNER query but in main query
+              Select statement_main_query = (Select) CCJSqlParserUtil.parse(sql);
+              PlainSelect plainSelect_main_query = (PlainSelect) statement_main_query.getSelectBody();
+              String where_cond = plainSelect_main_query.getWhere().toString();
+              sql_no_join = sql_inner.replaceAll("GROUP BY(.+?)ORDER BY.*LIMIT",
+                      "WHERE "+where_cond+" GROUP BY$1ORDER BY "+order_by+" LIMIT");
+            }
+            else{ //No WHERE condition
+              sql_no_join = sql_inner.replaceAll("ORDER BY.*LIMIT",
+                      "ORDER BY "+order_by+" LIMIT");
+            }
+          }
+          catch(JSQLParserException e) {
+            e.printStackTrace();
+          }
+          sql_upt = sql_no_join;
+        }
+        else{
+          sql_upt = sql;
+        }
+
+        String sql_final = sql_upt.replaceAll("POSITION\\(\\'(.+?)\\' IN (.+?)\\) > 0",
+                "$2 LIKE LOWER('%$1%')"); //Fix for LIKE query
+        checkNotPreparedOrCallable("execute(String)");
+        executeInternal(sql_final);
       }
     // Result set is null for DML or DDL.
     // Result set is closed if user cancelled the query.

@@ -25,6 +25,9 @@ import net.sf.jsqlparser.statement.select.Select;
 import org.apache.calcite.avatica.pai.DruidQueryOptimizer;
 import org.apache.calcite.avatica.remote.TypedValue;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
 import java.sql.CallableStatement;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -232,10 +235,8 @@ public abstract class AvaticaStatement
        */
       String sql_no_join = "";
       String sql_upt = "";
-      if(sql.contains("CREATE LOCAL TEMPORARY TABLE")) {
-        openResultSet=null;
-      }
-      else if(sql.contains("DROP TABLE")) {
+      if(sql.contains("CREATE LOCAL TEMPORARY TABLE") || sql.contains("DROP TABLE") || sql.contains("INSERT INTO")
+      || sql.contains("CREATE INDEX")) {
         openResultSet=null;
       }
       else {
@@ -280,9 +281,21 @@ public abstract class AvaticaStatement
           sql_upt = sql;
         }
 
-        String sql_final = sql_upt.replaceAll("POSITION\\(\\'(.+?)\\' IN (.+?)\\) > 0",
+        String sql_final = sql_upt.replaceAll("POSITION\\(\\'([^']*+)\\' IN (.+?)\\) > 0",
                 "$2 LIKE LOWER('%$1%')"); //Fix for LIKE query
         checkNotPreparedOrCallable("execute(String)");
+
+ //PAI Debugging. Capture logs to validate proper query updation
+        File file = new File("C:\\tmp\\tableau_custom.log");
+        FileWriter fr = null;
+        try {
+          fr = new FileWriter(file, true);
+          fr.write("Org SQL : "+sql+"\n"+"Upd SQL : "+sql_final+"\n\n");
+          fr.close();
+        } catch (IOException e) {
+          throw AvaticaConnection.HELPER.createException(e.getMessage());
+        }
+
         executeInternal(sql_final);
       }
     // Result set is null for DML or DDL.

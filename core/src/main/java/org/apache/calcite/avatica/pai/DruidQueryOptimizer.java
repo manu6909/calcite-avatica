@@ -27,9 +27,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-public class DruidQueryOptimizer {
+public  class DruidQueryOptimizer {
     public static String changeQuery(String mainQuery){
         Select statement = null;
+
         Map<String,String> outerAliasMap = null;
 
         try {
@@ -45,8 +46,28 @@ public class DruidQueryOptimizer {
         if ( plainInnerQuery == null){
             return mainQuery;
         }else{
+            // Handling second level in case we have queries inside FROM clause.
+            FromItem from = plainInnerQuery.getFromItem();
+            String inQuery = from.toString().split(from.getAlias().toString())[0];
+            plainInnerQuery = handleSecondLevel(inQuery) != null? handleSecondLevel(inQuery):plainInnerQuery;
             return changeAlias(plainInnerQuery,outerAliasMap).toString();
         }
+    }
+
+    /**
+     * Check wheather the from clause having inner query by parsing it and checking for exceptions.
+     * @param sql
+     * @return
+     */
+    public static PlainSelect handleSecondLevel(String sql){
+        Select newmt =null;
+        try {
+            newmt = (Select) CCJSqlParserUtil.parse(sql);
+        } catch (JSQLParserException e) {
+            return null;
+        }
+        return (PlainSelect)newmt.getSelectBody();
+
     }
     /**
      * Utility function to create Map of select column as keys and values as alias names.
@@ -91,7 +112,8 @@ public class DruidQueryOptimizer {
         for (SelectItem item:query.getSelectItems()
         ) {
             SelectExpressionItem sei = (SelectExpressionItem) item;
-            sei.setAlias(new Alias(outerAliasMap.get(sei.getExpression().toString())));
+            if(outerAliasMap.containsKey(sei.getExpression().toString()))
+                sei.setAlias(new Alias(outerAliasMap.get(sei.getExpression().toString())));
         }
         return query;
 

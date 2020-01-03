@@ -15,9 +15,7 @@
  * limitations under the License.
  */
 package org.apache.calcite.avatica;
-
 import net.sf.jsqlparser.JSQLParserException;
-import net.sf.jsqlparser.expression.Expression;
 import net.sf.jsqlparser.parser.CCJSqlParserUtil;
 import net.sf.jsqlparser.statement.select.OrderByElement;
 import net.sf.jsqlparser.statement.select.PlainSelect;
@@ -286,15 +284,15 @@ public abstract class AvaticaStatement
         checkNotPreparedOrCallable("execute(String)");
 
  //PAI Debugging. Capture logs to validate proper query updation
-        File file = new File("C:\\tmp\\tableau_custom.log");
-        FileWriter fr = null;
-        try {
-          fr = new FileWriter(file, true);
-          fr.write("Org SQL : "+sql+"\n"+"Upd SQL : "+sql_final+"\n\n");
-          fr.close();
-        } catch (IOException e) {
-          throw AvaticaConnection.HELPER.createException(e.getMessage());
-        }
+//        File file = new File("C:\\tmp\\tableau_custom.log");
+//        FileWriter fr = null;
+//        try {
+//          fr = new FileWriter(file, true);
+//          fr.write("Org SQL : "+sql+"\n"+"Upd SQL : "+sql_final+"\n\n");
+//          fr.close();
+//        } catch (IOException e) {
+//          throw AvaticaConnection.HELPER.createException(e.getMessage());
+//        }
 
         executeInternal(sql_final);
       }

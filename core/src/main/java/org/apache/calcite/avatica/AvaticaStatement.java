@@ -18,6 +18,11 @@ package org.apache.calcite.avatica;
 
 import org.apache.calcite.avatica.remote.TypedValue;
 
+import net.sf.jsqlparser.JSQLParserException;
+import net.sf.jsqlparser.expression.Alias;
+import net.sf.jsqlparser.parser.CCJSqlParserUtil;
+import net.sf.jsqlparser.statement.select.*;
+
 import java.sql.CallableStatement;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -26,7 +31,9 @@ import java.sql.SQLWarning;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -213,8 +220,94 @@ public abstract class AvaticaStatement
 
   public boolean execute(String sql) throws SQLException {
     checkOpen();
-    checkNotPreparedOrCallable("execute(String)");
-    executeInternal(sql);
+    /**
+     * Prealent AI update dated 12/23/2019
+     * Updates for using Avatica jdbc jar with Tableau
+     * 1. Replacing  'POSITION' clause with LIKE clause for pattern matching
+     * 2. Drop DDL statements ("CREATE", "DROP") which will avoid failures while pushing to
+     *    Calcite query planner
+     * 3. Intercept INNER JOIN queries fired by Tableau for Ton N results and push
+     *    corrected queries to calcite query planner for better performance
+     */
+    String sql_no_join = "";
+    String sql_upt = "";
+    if (sql.contains("CREATE LOCAL TEMPORARY TABLE") || sql.contains("DROP TABLE")
+        || sql.contains("INSERT INTO") || sql.contains("CREATE INDEX")) {
+      openResultSet = null;
+    } else {
+      if (sql.contains("INNER JOIN")) { // Find queries with INNER JOIN clause for updation
+        String order_by = "";
+        String sql_inner = changeQuery(sql);
+        try {
+          Select statement = (Select) CCJSqlParserUtil.parse(sql_inner);
+          PlainSelect plainSelect = (PlainSelect) statement.getSelectBody();
+          List<OrderByElement> orderByElementList = plainSelect.getOrderByElements();
+          if (!orderByElementList.isEmpty()) {
+            //Only pick first column from ORDER BY CLAUSE
+            String col = orderByElementList.get(0).getExpression().toString();
+            if (orderByElementList.get(0).isAsc()) {
+              order_by = col + " ASC";
+            } else {
+              order_by = col + " DESC";
+            }
+          }
+          if (sql_inner.contains("WHERE")) {
+            //Query with WHERE condition available in INNER query
+            sql_no_join = sql_inner.replaceAll("ORDER BY.*LIMIT",
+                "ORDER BY " + order_by + " LIMIT");
+          } else if (sql.contains("WHERE")) {
+            //Query with WHERE condition not available in INNER query but in main query
+            Select statement_main_query = (Select) CCJSqlParserUtil.parse(sql);
+            PlainSelect plainSelect_main_query = (PlainSelect) statement_main_query.getSelectBody();
+            String where_cond = plainSelect_main_query.getWhere().toString();
+            sql_no_join = sql_inner.replaceAll("GROUP BY(.+?)ORDER BY.*LIMIT",
+                "WHERE " + where_cond + " GROUP BY$1ORDER BY " + order_by + " LIMIT");
+          } else {
+            //No WHERE condition
+            sql_no_join = sql_inner.replaceAll("ORDER BY.*LIMIT",
+                "ORDER BY " + order_by + " LIMIT");
+          }
+        } catch (JSQLParserException e) {
+          e.printStackTrace();
+        }
+        sql_upt = sql_no_join;
+      } else {
+        String order_by = "";
+        try {
+          Select statement = (Select) CCJSqlParserUtil.parse(sql);
+          PlainSelect plainSelect = (PlainSelect) statement.getSelectBody();
+          List<OrderByElement> orderByElementList = plainSelect.getOrderByElements();
+          if (!orderByElementList.isEmpty()) {
+            //Only pick first column from ORDER BY CLAUSE
+            String col = orderByElementList.get(0).getExpression().toString();
+            if (orderByElementList.get(0).isAsc()) {
+              order_by = col + " ASC";
+            } else {
+              order_by = col + " DESC";
+            }
+          }
+        } catch (JSQLParserException e) {
+          e.printStackTrace();
+        }
+        sql_upt = sql.replaceAll("ORDER BY.*", "ORDER BY " + order_by);
+      }
+
+      String sql_final = sql_upt.replaceAll("POSITION\\(\\'([^']*+)\\' IN (.+?)\\) > 0",
+          "$2 LIKE LOWER('%$1%')"); //Fix for LIKE query
+
+      //PAI Debugging. Capture logs to validate proper query updation
+//        File file = new File("C:\\tmp\\tableau_custom.log");
+//        FileWriter fr = null;
+//        try {
+//          fr = new FileWriter(file, true);
+//          fr.write("Org SQL : "+sql+"\n"+"Upd SQL : "+sql_final+"\n\n");
+//          fr.close();
+//        } catch (IOException e) {
+//          throw AvaticaConnection.HELPER.createException(e.getMessage());
+//        }
+      checkNotPreparedOrCallable("execute(String)");
+      executeInternal(sql_final);
+    }
     // Result set is null for DML or DDL.
     // Result set is closed if user cancelled the query.
     return openResultSet != null && !openResultSet.isClosed();
@@ -626,6 +719,105 @@ public abstract class AvaticaStatement
     }
     return parameterValues;
   }
+  private String changeQuery(String mainQuery) {
+    Select statement = null;
+
+    Map<String, String> outerAliasMap = null;
+
+    try {
+      statement = (Select) CCJSqlParserUtil.parse(mainQuery);
+    } catch (JSQLParserException e) {
+      e.printStackTrace();
+    }
+    PlainSelect plainSelect = (PlainSelect) statement.getSelectBody();
+    outerAliasMap = getOuterAliasMap(plainSelect);
+
+
+    PlainSelect plainInnerQuery = getInnerQuery(plainSelect);
+    if (plainInnerQuery == null) {
+      return mainQuery;
+    } else {
+      // Handling second level in case we have queries inside FROM clause.
+      FromItem from = plainInnerQuery.getFromItem();
+      String inQuery = from.toString().split(from.getAlias().toString())[0];
+      plainInnerQuery = handleSecondLevel(inQuery) != null ? handleSecondLevel(inQuery)
+          : plainInnerQuery;
+      return changeAlias(plainInnerQuery, outerAliasMap).toString();
+    }
+  }
+
+  /**
+   *
+   * PAI changes for Tableau Druid integration
+   */
+
+  /**
+   * Check wheather the from clause having inner query by parsing it and checking for exceptions.
+   * @param sql sql query string
+   * @return
+   */
+  private PlainSelect handleSecondLevel(String sql) {
+    Select newmt = null;
+    try {
+      newmt = (Select) CCJSqlParserUtil.parse(sql);
+    } catch (JSQLParserException e) {
+      return null;
+    }
+    return (PlainSelect) newmt.getSelectBody();
+
+  }
+  /**
+   * Utility function to create Map of select column as keys and values as alias names.
+   * @param query sql query string
+   * @return
+   */
+  private Map<String, String> getOuterAliasMap(PlainSelect query) {
+    Map<String, String> selectAliasMap = new HashMap<String, String>();
+    for (SelectItem item:query.getSelectItems()) {
+      SelectExpressionItem sei = (SelectExpressionItem) item;
+      selectAliasMap.put(sei.getExpression().toString(), sei.getAlias().getName());
+
+    }
+    return selectAliasMap;
+  }
+
+  /**
+   * Function to get inner query from main query if join is found.Only handles one Join.
+   * @param query sql query string
+   * @return
+   */
+  private PlainSelect getInnerQuery(PlainSelect query) {
+    List<Join> joins = query.getJoins();
+    Select innerQuery = null;
+    if (joins != null) {
+      try {
+        for (Join jo : joins) {
+          String[] arrays = jo.getRightItem().toString().split(jo.getRightItem().getAlias()
+              .toString());
+          innerQuery = (Select) CCJSqlParserUtil.parse(arrays[0]);
+        }
+      } catch (JSQLParserException e) {
+        e.printStackTrace();
+        return null;
+      }
+    }
+    return  (innerQuery == null) ? null : (PlainSelect) innerQuery.getSelectBody();
+  }
+
+  private PlainSelect changeAlias(PlainSelect query, Map<String, String> outerAliasMap) {
+    for (SelectItem item:query.getSelectItems()) {
+      SelectExpressionItem sei = (SelectExpressionItem) item;
+      if (outerAliasMap.containsKey(sei.getExpression().toString())) {
+        sei.setAlias(new Alias(outerAliasMap.get(sei.getExpression().toString())));
+      }
+    }
+    return query;
+
+  }
+  /**
+   *
+   * PAI changes for end
+   */
 
 }
 

@@ -20,9 +20,10 @@ import com.github.vlsi.gradle.crlf.CrLfSpec
 import com.github.vlsi.gradle.crlf.LineEndings
 import com.github.vlsi.gradle.license.GatherLicenseTask
 import com.github.vlsi.gradle.license.api.SpdxLicense
+import com.github.vlsi.gradle.license.api.and
 import com.github.vlsi.gradle.release.Apache2LicenseRenderer
 import com.github.vlsi.gradle.release.ArtifactType
-import com.github.vlsi.gradle.release.dsl.dependencyLicenses
+// import com.github.vlsi.gradle.release.dsl.dependencyLicenses
 import com.github.vlsi.gradle.release.dsl.licensesCopySpec
 
 plugins {
@@ -51,6 +52,9 @@ tasks {
         extraLicenseDir.set(file("$rootDir/src/main/config/licenses"))
         expectLicense("com.google.protobuf:protobuf-java", SpdxLicense.BSD_3_Clause)
         expectLicense("org.slf4j:slf4j-api:1.7.25", SpdxLicense.MIT)
+        // Prevalent AI changes - License for jsqlparser
+        expectLicense("com.github.jsqlparser:jsqlparser:3.1",
+                SpdxLicense.Apache_2_0 and SpdxLicense.LGPL_2_1_only)
     }
 
     val license by registering(Apache2LicenseRenderer::class) {
@@ -79,7 +83,7 @@ tasks {
         CrLfSpec(LineEndings.LF).run {
             into("META-INF") {
                 textAuto()
-                dependencyLicenses(licenseFiles)
+                // dependencyLicenses(licenseFiles)
             }
         }
     }

@@ -36,6 +36,9 @@ dependencies {
     api("com.fasterxml.jackson.core:jackson-annotations")
     api("com.fasterxml.jackson.core:jackson-databind")
     api("com.google.protobuf:protobuf-java")
+    // Prevalent AI changes for Tableau query issues start
+    api("com.github.jsqlparser:jsqlparser:3.1")
+    // Prevalent AI changes end
     implementation("com.fasterxml.jackson.core:jackson-core")
     implementation("org.apache.httpcomponents:httpclient")
     implementation("org.apache.httpcomponents:httpcore")

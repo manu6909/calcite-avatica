@@ -285,11 +285,13 @@ public abstract class AvaticaStatement
             } else {
               order_by = col + " DESC";
             }
+            sql_upt = sql.replaceAll("ORDER BY.*", "ORDER BY " + order_by);
+          } else {
+            sql_upt = sql;
           }
         } catch (JSQLParserException e) {
           e.printStackTrace();
         }
-        sql_upt = sql.replaceAll("ORDER BY.*", "ORDER BY " + order_by);
       }
 
       String sql_final = sql_upt.replaceAll("POSITION\\(\\'([^']*+)\\' IN (.+?)\\) > 0",

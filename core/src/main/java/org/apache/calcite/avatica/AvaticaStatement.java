@@ -16,13 +16,19 @@
  */
 package org.apache.calcite.avatica;
 
+import net.sf.jsqlparser.util.SelectUtils;
+
 import org.apache.calcite.avatica.remote.TypedValue;
 
 import net.sf.jsqlparser.JSQLParserException;
 import net.sf.jsqlparser.expression.Alias;
+import net.sf.jsqlparser.expression.Expression;
 import net.sf.jsqlparser.parser.CCJSqlParserUtil;
 import net.sf.jsqlparser.statement.select.*;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
 import java.sql.CallableStatement;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -36,6 +42,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * Implementation of {@link java.sql.Statement}
@@ -228,76 +237,27 @@ public abstract class AvaticaStatement
      *    Calcite query planner
      * 3. Intercept INNER JOIN queries fired by Tableau for Ton N results and push
      *    corrected queries to calcite query planner for better performance
+     * 4. Supporting methods added at bottom of the file
      */
-    String sql_no_join = "";
     String sql_upt = "";
     if (sql.contains("CREATE LOCAL TEMPORARY TABLE") || sql.contains("DROP TABLE")
         || sql.contains("INSERT INTO") || sql.contains("CREATE INDEX")) {
       openResultSet = null;
     } else {
-      if (sql.contains("INNER JOIN")) { // Find queries with INNER JOIN clause for updation
-        String order_by = "";
+      //Find queries with INNER JOIN and LIMIT clause for updation. These queries can be fired by
+      //tableau when trying to visualize Top N chart
+      if (sql.contains("INNER JOIN") && sql.contains("LIMIT")) {
         String sql_inner = changeQuery(sql);
-        try {
-          Select statement = (Select) CCJSqlParserUtil.parse(sql_inner);
-          PlainSelect plainSelect = (PlainSelect) statement.getSelectBody();
-          List<OrderByElement> orderByElementList = plainSelect.getOrderByElements();
-          if (!orderByElementList.isEmpty()) {
-            //Only pick first column from ORDER BY CLAUSE
-            String col = orderByElementList.get(0).getExpression().toString();
-            if (orderByElementList.get(0).isAsc()) {
-              order_by = col + " ASC";
-            } else {
-              order_by = col + " DESC";
-            }
-          }
-          if (sql_inner.contains("WHERE")) {
-            //Query with WHERE condition available in INNER query
-            sql_no_join = sql_inner.replaceAll("ORDER BY.*LIMIT",
-                "ORDER BY " + order_by + " LIMIT");
-          } else if (sql.contains("WHERE")) {
-            //Query with WHERE condition not available in INNER query but in main query
-            Select statement_main_query = (Select) CCJSqlParserUtil.parse(sql);
-            PlainSelect plainSelect_main_query = (PlainSelect) statement_main_query.getSelectBody();
-            String where_cond = plainSelect_main_query.getWhere().toString();
-            sql_no_join = sql_inner.replaceAll("GROUP BY(.+?)ORDER BY.*LIMIT",
-                "WHERE " + where_cond + " GROUP BY$1ORDER BY " + order_by + " LIMIT");
-          } else {
-            //No WHERE condition
-            sql_no_join = sql_inner.replaceAll("ORDER BY.*LIMIT",
-                "ORDER BY " + order_by + " LIMIT");
-          }
-        } catch (JSQLParserException e) {
-          e.printStackTrace();
-        }
-        sql_upt = sql_no_join;
+        sql_upt = getFinalQueryWithoutJoin(sql,sql_inner);
       } else {
-        String order_by = "";
-        try {
-          Select statement = (Select) CCJSqlParserUtil.parse(sql);
-          PlainSelect plainSelect = (PlainSelect) statement.getSelectBody();
-          List<OrderByElement> orderByElementList = plainSelect.getOrderByElements();
-          if (!orderByElementList.isEmpty()) {
-            //Only pick first column from ORDER BY CLAUSE
-            String col = orderByElementList.get(0).getExpression().toString();
-            if (orderByElementList.get(0).isAsc()) {
-              order_by = col + " ASC";
-            } else {
-              order_by = col + " DESC";
-            }
-            sql_upt = sql.replaceAll("ORDER BY.*", "ORDER BY " + order_by);
-          } else {
-            sql_upt = sql;
-          }
-        } catch (JSQLParserException e) {
-          e.printStackTrace();
-        }
+        sql_upt = getFinalQuery(sql);
       }
 
       String sql_final = sql_upt.replaceAll("POSITION\\(\\'([^']*+)\\' IN (.+?)\\) > 0",
           "$2 LIKE LOWER('%$1%')"); //Fix for LIKE query
-
-      //PAI Debugging. Capture logs to validate proper query updation
+      // PAI Debugging. Capture logs to validate proper query updation.
+      // Below file path will only work in Tableau Desktop. So careful before uncommenting
+      // this section and creating the jar file to deploy in Tableau server
 //        File file = new File("C:\\tmp\\tableau_custom.log");
 //        FileWriter fr = null;
 //        try {
@@ -721,6 +681,19 @@ public abstract class AvaticaStatement
     }
     return parameterValues;
   }
+
+
+  /**
+   *
+   * PAI changes for Tableau Druid integration
+   */
+
+  /**
+   * Method to get return properly formatted inner query from a SQL statement with JOIN statement.
+   * @param mainQuery sql query string
+   * @return formatted inner query
+   */
+
   private String changeQuery(String mainQuery) {
     Select statement = null;
 
@@ -747,11 +720,6 @@ public abstract class AvaticaStatement
       return changeAlias(plainInnerQuery, outerAliasMap).toString();
     }
   }
-
-  /**
-   *
-   * PAI changes for Tableau Druid integration
-   */
 
   /**
    * Check wheather the from clause having inner query by parsing it and checking for exceptions.
@@ -816,9 +784,122 @@ public abstract class AvaticaStatement
     return query;
 
   }
+
+  /**
+   * Method to handle incorrect query pushed by Tableau when applying LIMIT using particular
+   * metrics (like SUM, AVG, etc). Tableau creates an improper query with INNER JOIN, which causes
+   * performance issues in Druid. This function handles multiple conditions and corrects all the
+   * issues. SELECT columns, GROUP BY columns will be picked from main query.
+   * ORDER BY columns, LIMIT clause will be picked from inner query. WHERE clause will be picked
+   * from main query if available or else from inner query
+   * @param sql Original SQL query
+   * @param sql_inner Sub-query inside the JOIN clause
+   * @return Corrected SQL query
+   */
+  private static String getFinalQueryWithoutJoin(String sql, String sql_inner) {
+    String order_by = "";
+    String group_by = "";
+    String select = "";
+    String where = "";
+    String limit = "";
+    String from = "";
+    String output = "";
+    List<OrderByElement> orderByElementList = new ArrayList<OrderByElement>();
+    List<SelectItem> selectElementList_full_query = new ArrayList<SelectItem>();
+    List<SelectItem> selectElementList_inner_query = new ArrayList<SelectItem>();
+    List<String> select_columns_full_query = new ArrayList<String>();
+    Expression where_clause_full_query = null;
+    Expression where_clause_inner_query = null;
+    try {
+      Select stmnt_inner_query = (Select) CCJSqlParserUtil.parse(sql_inner);
+      PlainSelect inner_query = (PlainSelect) stmnt_inner_query.getSelectBody();
+      Select stmnt_main_query = (Select) CCJSqlParserUtil.parse(sql);
+      PlainSelect main_query = (PlainSelect) stmnt_main_query.getSelectBody();
+      //Get WHERE clause from both the queries
+      where_clause_full_query = main_query.getWhere();
+      where_clause_inner_query = inner_query.getWhere();
+      //Get columns in SELECT statements from both the queries
+      selectElementList_full_query = main_query.getSelectItems();
+      selectElementList_inner_query = inner_query.getSelectItems();
+      orderByElementList = inner_query.getOrderByElements();
+      if (orderByElementList != null && !orderByElementList.isEmpty()) {
+        //Only pick first column from ORDER BY CLAUSE
+        String col_alias = "";
+        String col = orderByElementList.get(0).getExpression().toString();
+        String col_name = selectElementList_inner_query.get((Integer.parseInt(col))-1).toString();
+        Pattern pattern = Pattern.compile(".*AS(.*)");
+        Matcher matcher = pattern.matcher(col_name);
+        if (matcher.find()) { //Get the alias for using in the ORDER by clause
+          col_alias = matcher.group(1).trim();
+        } else {
+          col_alias = col_name;
+        }
+        if (orderByElementList.get(0).isAsc()) {
+          order_by = col_alias + " ASC";
+        } else {
+          order_by = col_alias + " DESC";
+        }
+      }
+      //So far WHERE clause will be always present in outer query. But keeping a condition to
+      //get the WHERE clause from inner query in case it is missing from outer query
+      if (null != where_clause_full_query) {
+        where = where_clause_full_query.toString();
+      } else if (null != where_clause_inner_query) {
+        where = where_clause_inner_query.toString();
+      } else {
+        where = "";
+      }
+      selectElementList_full_query.forEach(x -> select_columns_full_query.add(x.toString()));
+      select = select_columns_full_query.stream().collect(Collectors.joining(", "));
+      from = main_query.getFromItem().toString();
+      limit = inner_query.getLimit().toString();
+      group_by = main_query.getGroupBy().toString();
+      output = ("" != where) ? "SELECT " + select + " FROM "+ from + " WHERE " + where + " " +
+          group_by + " " + "ORDER BY " + order_by + " " + limit : "SELECT " + select + " FROM " +
+          from + " " + group_by + " " + "ORDER BY " + order_by + " " + limit;
+    } catch (JSQLParserException e) {
+      e.printStackTrace();
+    }
+    return output;
+  }
+
+  /**
+   * Method to fix problems in SQL query due to incorrect query parameters pushed by Tablbeau.
+   * Tableau pushes two orderBy columns eventhough user asks for only one column. This is fixed
+   * in this method. This method is used all queries except the one with INNER JOIN clause
+   * @param sql Original SQL query
+   * @return Corrected SQL query
+   */
+  private String getFinalQuery(String sql) {
+    String order_by = "";
+    String output = "";
+    try {
+      Select statement = (Select) CCJSqlParserUtil.parse(sql);
+      String sql_cleaned = statement.toString(); //Removing newlines for avoiding Regex issues
+      PlainSelect plainSelect = (PlainSelect) statement.getSelectBody();
+      List<OrderByElement> orderByElementList = new ArrayList<OrderByElement>();
+      orderByElementList = plainSelect.getOrderByElements();
+      if (orderByElementList != null && !orderByElementList.isEmpty()) {
+        //Only pick first column from ORDER BY CLAUSE
+        String col = orderByElementList.get(0).getExpression().toString();
+        if (orderByElementList.get(0).isAsc()) {
+          order_by = col + " ASC";
+        } else {
+          order_by = col + " DESC";
+        }
+        output = sql_cleaned.replaceAll("ORDER BY.*(ASC|DESC)", "ORDER BY " + order_by);
+      } else {
+        output = sql_cleaned;
+      }
+    } catch (JSQLParserException e) {
+      e.printStackTrace();
+    }
+    return output;
+  }
+
   /**
    *
-   * PAI changes for end
+   * PAI changes for Tableau Druid integration end
    */
 
 }
